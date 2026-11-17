@@ -60,7 +60,6 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         enableEdgeToEdge()
 
-        checkAndRequestPermissions()
 
         val serviceIntent = Intent(this, BestboyMediaService::class.java)
         ContextCompat.startForegroundService(this, serviceIntent)
@@ -177,6 +176,16 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        AdMobManager.setForegroundActivity(this)
+    }
+
+    override fun onPause() {
+        AdMobManager.clearForegroundActivity(this)
+        super.onPause()
     }
 
     private fun checkAndRequestPermissions() {

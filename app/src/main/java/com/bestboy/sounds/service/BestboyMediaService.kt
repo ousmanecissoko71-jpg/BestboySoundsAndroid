@@ -17,12 +17,16 @@ import androidx.media3.session.MediaSessionService
 import com.bestboy.sounds.BestboySoundsApplication
 import com.bestboy.sounds.MainActivity
 import com.bestboy.sounds.R
+import com.bestboy.sounds.ads.AdMobManager
 
 @UnstableApi
 class BestboyMediaService : MediaSessionService() {
 
     private var mediaSession: MediaSession? = null
     private lateinit var player: ExoPlayer
+
+    private var observedMediaId: String? = null
+    private var currentItemAlreadyCounted = false
 
     companion object {
         const val NOTIFICATION_ID = 1001
@@ -60,72 +64,125 @@ class BestboyMediaService : MediaSessionService() {
             .build()
 
         player.addListener(object : Player.Listener {
+
             override fun onIsPlayingChanged(isPlaying: Boolean) {
                 updateNotification()
             }
 
-            override fun onMediaItemTransition(mediaItem: MediaItem?, reason: Int) {
+            override fun onMediaItemTransition(
+                mediaItem: MediaItem?,
+                reason: Int
+            ) {
+                if (
+                    reason == Player.MEDIA_ITEM_TRANSITION_REASON_AUTO ||
+                    reason == Player.MEDIA_ITEM_TRANSITION_REASON_REPEAT
+                ) {
+                    countCompletedCurrentTrack()
+                }
+
+                observedMediaId = mediaItem?.mediaId
+                currentItemAlreadyCounted = false
+
                 updateNotification()
             }
 
             override fun onPlaybackStateChanged(playbackState: Int) {
                 if (playbackState == Player.STATE_ENDED) {
-                    if (player.hasNextMediaItem()) {
-                        player.seekToNextMediaItem()
-                    }
+                    countCompletedCurrentTrack()
                 }
+
+                updateNotification()
             }
         })
     }
 
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (player.currentMediaItem == null) updateNotification()
+    private fun countCompletedCurrentTrack() {
+        if (observedMediaId != null && !currentItemAlreadyCounted) {
+            currentItemAlreadyCounted = true
+            AdMobManager.onSongCompleted(applicationContext)
+        }
+    }
+
+    override fun onStartCommand(
+        intent: Intent?,
+        flags: Int,
+        startId: Int
+    ): Int {
+        if (player.currentMediaItem == null) {
+            updateNotification()
+        }
+
         intent?.action?.let { action ->
             when (action) {
                 ACTION_PLAY -> player.play()
                 ACTION_PAUSE -> player.pause()
-                ACTION_NEXT -> if (player.hasNextMediaItem()) player.seekToNextMediaItem()
-                ACTION_PREV -> if (player.hasPreviousMediaItem()) player.seekToPreviousMediaItem()
+                ACTION_NEXT -> if (player.hasNextMediaItem()) {
+                    player.seekToNextMediaItem()
+                }
+                ACTION_PREV -> if (player.hasPreviousMediaItem()) {
+                    player.seekToPreviousMediaItem()
+                }
             }
+
             updateNotification()
         }
+
         return super.onStartCommand(intent, flags, startId)
     }
 
     private fun updateNotification() {
         val currentMediaItem = player.currentMediaItem
-        val title = currentMediaItem?.mediaMetadata?.title?.toString() ?: "Bestboy Sounds"
-        val artist = currentMediaItem?.mediaMetadata?.artist?.toString() ?: "Ready to Play"
+
+        val title = currentMediaItem?.mediaMetadata?.title?.toString()
+            ?: "Bestboy Sounds"
+
+        val artist = currentMediaItem?.mediaMetadata?.artist?.toString()
+            ?: "Ready to Play"
+
         val isPlaying = player.isPlaying
 
         val prevPendingIntent = PendingIntent.getService(
-            this, 1,
-            Intent(this, BestboyMediaService::class.java).apply { action = ACTION_PREV },
+            this,
+            1,
+            Intent(this, BestboyMediaService::class.java).apply {
+                action = ACTION_PREV
+            },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         val playPauseAction = if (isPlaying) ACTION_PAUSE else ACTION_PLAY
+
         val playPausePendingIntent = PendingIntent.getService(
-            this, 2,
-            Intent(this, BestboyMediaService::class.java).apply { action = playPauseAction },
+            this,
+            2,
+            Intent(this, BestboyMediaService::class.java).apply {
+                action = playPauseAction
+            },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         val nextPendingIntent = PendingIntent.getService(
-            this, 3,
-            Intent(this, BestboyMediaService::class.java).apply { action = ACTION_NEXT },
+            this,
+            3,
+            Intent(this, BestboyMediaService::class.java).apply {
+                action = ACTION_NEXT
+            },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
         val contentIntent = PendingIntent.getActivity(
-            this, 0,
+            this,
+            0,
             Intent(this, MainActivity::class.java).apply {
                 flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
             },
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
         )
 
-        val notification = NotificationCompat.Builder(this, BestboySoundsApplication.PLAYBACK_CHANNEL_ID)
+        val notification = NotificationCompat.Builder(
+            this,
+            BestboySoundsApplication.PLAYBACK_CHANNEL_ID
+        )
             .setContentTitle(title)
             .setContentText(artist)
             .setSmallIcon(android.R.drawable.ic_media_play)
@@ -133,24 +190,36 @@ class BestboyMediaService : MediaSessionService() {
             .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
             .setOngoing(isPlaying)
             .setOnlyAlertOnce(true)
-            .addAction(android.R.drawable.ic_media_previous, "Previous", prevPendingIntent)
             .addAction(
-                if (isPlaying) android.R.drawable.ic_media_pause else android.R.drawable.ic_media_play,
+                android.R.drawable.ic_media_previous,
+                "Previous",
+                prevPendingIntent
+            )
+            .addAction(
+                if (isPlaying) android.R.drawable.ic_media_pause
+                else android.R.drawable.ic_media_play,
                 if (isPlaying) "Pause" else "Play",
                 playPausePendingIntent
             )
-            .addAction(android.R.drawable.ic_media_next, "Next", nextPendingIntent)
+            .addAction(
+                android.R.drawable.ic_media_next,
+                "Next",
+                nextPendingIntent
+            )
             .setStyle(
-                androidx.media.app.NotificationCompat.MediaStyle()
+                androidx.media3.session.MediaStyleNotificationHelper.MediaStyle(
+                    checkNotNull(mediaSession)
+                )
                     .setShowActionsInCompactView(0, 1, 2)
             )
             .build()
 
-        val foregroundServiceType = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
-        } else {
-            0
-        }
+        val foregroundServiceType =
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK
+            } else {
+                0
+            }
 
         ServiceCompat.startForeground(
             this,
@@ -160,7 +229,9 @@ class BestboyMediaService : MediaSessionService() {
         )
     }
 
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? {
+    override fun onGetSession(
+        controllerInfo: MediaSession.ControllerInfo
+    ): MediaSession? {
         return mediaSession
     }
 
@@ -176,6 +247,7 @@ class BestboyMediaService : MediaSessionService() {
             release()
             mediaSession = null
         }
+
         super.onDestroy()
     }
 }
